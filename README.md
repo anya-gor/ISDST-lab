@@ -2,77 +2,78 @@
 
 **Студент:** Гордеенко А.В.
 
+Постановка:
+
 > API или модуль: создать короткую ссылку, получить исходный URL. Тесты основных сценариев. CI; CD — mock-deploy скрипт, пишущий «версию» в `deployed/VERSION`.
 
-Полная постановка — в ветке `main`, файл `tasks/lab-6.md`.
-
-[![CI/CD](../../actions/workflows/ci.yml/badge.svg)](../../actions/workflows/ci.yml)
-<!-- После публикации на GitHub замените ссылку на: https://github.com/<user>/<repo>/actions/workflows/ci.yml -->
+[![CI/CD](https://github.com/anya-gor/ISDST-lab/actions/workflows/ci.yml/badge.svg?branch=lab-6)](https://github.com/anya-gor/ISDST-lab/actions/workflows/ci.yml)
 
 ## Структура проекта
 
-```
-shortener/service.py     # класс UrlShortener (хранилище в памяти)
-shortener/__init__.py
-tests/test_shortener.py  # тесты сервиса (в т. ч. параметризованные)
-tests/test_deploy.py     # тесты mock-деплоя
-scripts/deploy.py        # CD: пишет deployed/VERSION
-VERSION                  # базовая версия (0.1.0)
-.github/workflows/ci.yml # пайплайн GitHub Actions
-```
+- `shortener/service.py` - сам сервис, класс `UrlShortener`, ссылки хранятся в словаре в памяти
+- `tests/test_shortener.py` - тесты сервиса
+- `tests/test_deploy.py` - тесты скрипта деплоя
+- `scripts/deploy.py` - mock-деплой, пишет версию в `deployed/VERSION`
+- `VERSION` - номер версии (0.1.0)
+- `.github/workflows/ci.yml` - пайплайн для GitHub Actions
 
-## Сервис
+## Как работает сервис
 
 ```python
 from shortener import UrlShortener
 
-s = UrlShortener(base_url="http://sho.rt/")
+s = UrlShortener()
 code = s.create("https://example.com/page")   # 'g8'
 s.short_url("https://example.com/page")       # 'http://sho.rt/g8'
 s.resolve(code)                               # 'https://example.com/page'
 ```
 
-- код — число-счётчик в base62 (детерминированно, без коллизий); один URL → один код;
-- принимаются только `http`/`https` ссылки с хостом (иначе `InvalidUrlError`);
-- неизвестный код → `UnknownCodeError`.
+- Код ссылки - это номер по счётчику, записанный в base62 (цифры и латинские буквы). Так коды короткие и не повторяются.
+- Если одну и ту же ссылку сократить два раза, код будет одинаковый.
+- Принимаются только ссылки `http://` и `https://`, иначе ошибка `InvalidUrlError`.
+- Если такого кода нет, `resolve` выдаёт `UnknownCodeError`.
 
 ## Как запустить тесты локально
 
 ```bash
-python -m venv .venv
-.venv\Scripts\activate          # Linux/macOS: source .venv/bin/activate
 pip install -r requirements.txt
 pytest --cov=shortener --cov-report=term-missing --cov-fail-under=90
 ```
 
-Ожидаемо: `21 passed`, покрытие `shortener` — 100 %.
+Должно быть `21 passed`, покрытие 100%.
 
 ## Как устроен CI/CD
 
-Файл `.github/workflows/ci.yml`, два задания:
+В пайплайне два задания.
 
-| Стадия | Когда | Что делает |
-|--------|-------|-----------|
-| **test** | каждый `push` и Pull Request, на Python 3.11 и 3.12 | ставит зависимости, запускает `pytest --cov-fail-under=90`. Любой упавший тест или покрытие < 90 % → задание **красное**, пайплайн останавливается |
-| **deploy** | **только `push` в ветку `main`** и только если `test` успешен (`needs: test`) | запускает `python scripts/deploy.py`: копирует пакет `shortener/` в `deployed/`, пишет `deployed/VERSION` вида `0.1.0+<короткий SHA>`, показывает файл в логе и сохраняет `deployed/` как **artifact** |
+**test** запускается на каждый push и pull request. Ставит зависимости и гоняет pytest на Python 3.11 и 3.12. Если хоть один тест упал или покрытие меньше 90%, задание красное и дальше ничего не идёт.
 
-Деплой — упрощённый (mock): никаких серверов и секретов. «Успешный деплой» = задание `deploy` зелёное, в логе строка `[deploy] готово`, в artifact `deployed` лежит файл `VERSION`.
+**deploy** запускается только если test прошёл, и только при push в `main` или при push тега вида `v*` (например `v0.1.0`). На других ветках деплоя нет. Что делает:
 
-Проверка деплоя локально:
+1. запускает `python scripts/deploy.py`;
+2. скрипт копирует пакет `shortener` в папку `deployed/` и пишет в `deployed/VERSION` версию вида `0.1.0+abc1234` (номер из файла `VERSION` и начало хеша коммита);
+3. выводит `deployed/VERSION` в лог;
+4. сохраняет папку `deployed/` как артефакт.
+
+Это не настоящий деплой на сервер, а имитация, как и сказано в задании. Деплой считается успешным, если задание deploy зелёное, в логе есть `[deploy] готово`, а в артефакте `deployed` лежит файл `VERSION`.
+
+Так как в этом репозитории каждая лаба лежит в своей ветке, а в `main` только описания заданий, деплой этой работы запускается через тег:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Проверить деплой локально:
 
 ```bash
 python scripts/deploy.py
-cat deployed/VERSION      # 0.1.0
+cat deployed/VERSION
 ```
-
-(в CI версия содержит SHA коммита из переменной `GITHUB_SHA`; каталог `deployed/` в git не хранится).
 
 ## Как проверить статус CI
 
-1. Опубликуйте репозиторий на GitHub (`git remote add origin <URL>`, `git push -u origin --all`).
-2. Вкладка **Actions** → workflow «CI/CD» → последний запуск; зелёная галочка — тесты прошли; у запуска на `main` дополнительно виден artifact `deployed`.
-3. Badge в начале README показывает статус последнего прогона (замените путь на `https://github.com/<user>/<repo>/...`).
-4. Чтобы убедиться, что пайплайн «краснеет»: сломайте любой assert, сделайте push — задание `test` упадёт, `deploy` не запустится.
-
-> Примечание: локально пайплайн в GitHub Actions не запускался (репозиторий пока не опубликован); логика тестов и деплоя проверена запуском `pytest` и `scripts/deploy.py`, а YAML — загрузкой парсером.
-> Ветка `lab-6` — рабочая ветка учебного репозитория: деплой-задание срабатывает на `main` того репозитория, куда публикуется проект.
+- На GitHub открыть вкладку Actions, workflow "CI/CD": https://github.com/anya-gor/ISDST-lab/actions
+- Там видно запуски для ветки `lab-6` (только тесты) и для тега `v0.1.0` (тесты + деплой, у него есть артефакт `deployed`).
+- Бейдж в начале README показывает статус последнего запуска на ветке `lab-6`.
+- Чтобы проверить, что пайплайн правда падает, можно сломать любой тест и сделать push - задание test станет красным.
