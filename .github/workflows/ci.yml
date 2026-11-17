@@ -1,0 +1,41 @@
+name: CI/CD
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Тесты (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Запуск тестов (пайплайн падает при провале)
+        run: pytest --cov=shortener --cov-report=term-missing --cov-fail-under=90
+
+  deploy:
+    name: Mock-деплой (только main)
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Деплой (записывает deployed/VERSION)
+        run: python scripts/deploy.py
+      - name: Проверка результата деплоя
+        run: cat deployed/VERSION
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployed
+          path: deployed/
