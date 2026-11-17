@@ -2,90 +2,91 @@
 
 **Студент:** Гордеенко А.В.
 
+Постановка:
+
 > API поездок + Redis (активные аренды). Compose: `api` и `redis`. Старт/стоп аренды, список активных. Явная проверка через `curl` в README.
 
-Полная постановка — в ветке `main`, файл `tasks/lab-7.md`.
+## Что сделано
 
-## Что внутри
+Небольшое API на Flask, которое запускает и завершает аренду самоката и показывает активные аренды. Активные аренды хранятся в Redis.
 
-```
-app/main.py            # Flask API (старт/стоп/список аренд)
-app/requirements.txt   # зависимости контейнера (flask, redis, gunicorn)
-Dockerfile             # образ api
-compose.yaml           # api + redis
-.env.example           # пример переменных окружения
-tests/test_api.py      # тесты API на fakeredis (без Docker)
-```
+Файлы:
 
-| Сервис | Образ | Роль |
-|--------|-------|------|
-| `api` | собирается из `Dockerfile` (python:3.12-slim, gunicorn, пользователь не root) | REST API, порт `8000` |
-| `redis` | `redis:7-alpine` | хранит активные аренды (hash `rentals:active`), том `redis-data` + AOF — данные переживают перезапуск |
+- `app/main.py` - код API
+- `app/requirements.txt` - зависимости для контейнера (flask, redis, gunicorn)
+- `Dockerfile` - сборка образа API
+- `compose.yaml` - запуск двух сервисов: `api` и `redis`
+- `.env.example` - пример переменных окружения
+- `tests/test_api.py` - тесты API (запускаются без Docker, вместо Redis fakeredis)
 
-Compose: общая сеть `backend`; `api` обращается к Redis по имени `redis`; `depends_on` с `condition: service_healthy` — `api` стартует, когда Redis ответил на `redis-cli ping`; у образа `api` есть `HEALTHCHECK` на `/health` (проверяет и связь с Redis).
+Сервисы в compose:
+
+- `api` - собирается из `Dockerfile` на основе `python:3.12-slim`, запускается через gunicorn на порту 8000 и не от root. В образе есть `HEALTHCHECK`, он дёргает `/health`.
+- `redis` - официальный образ `redis:7-alpine`. Данные лежат в томе `redis-data`, включён AOF, поэтому аренды не пропадают после перезапуска.
+
+Оба сервиса в одной сети `backend`. API подключается к Redis по имени `redis`. В `depends_on` стоит `condition: service_healthy`, то есть API стартует только после того, как Redis ответил на `redis-cli ping`.
 
 ## Запуск
 
 ```bash
-cp .env.example .env          # Windows: copy .env.example .env
+cp .env.example .env
 docker compose up --build -d
-docker compose ps             # у обоих сервисов статус healthy
+docker compose ps
 ```
 
-Остановить: `docker compose down` (данные Redis остаются в томе; полностью очистить: `docker compose down -v`).
+В `docker compose ps` у обоих контейнеров должен быть статус `healthy`.
 
-## Проверка (curl)
+Остановить: `docker compose down`. Если нужно удалить и данные Redis: `docker compose down -v`.
+
+## Проверка
 
 ```bash
-# 0. Состояние (проверяет и связь с Redis)
+# проверка, что API работает и видит Redis
 curl -s http://localhost:8000/health
 # {"status":"ok"}
 
-# 1. Старт аренды
-curl -s -X POST http://localhost:8000/rentals \
-  -H "Content-Type: application/json" \
-  -d '{"scooter_id":"S-1","user_id":"u1"}'
-# 201 {"scooter_id":"S-1","started_at":1731830000,"user_id":"u1"}
+# начать аренду
+curl -s -X POST http://localhost:8000/rentals -H "Content-Type: application/json" -d '{"scooter_id":"S-1","user_id":"u1"}'
+# {"scooter_id":"S-1","started_at":1794916093,"user_id":"u1"}
 
-# 2. Тот же самокат второй раз — отказ
-curl -s -i -X POST http://localhost:8000/rentals \
-  -H "Content-Type: application/json" \
-  -d '{"scooter_id":"S-1","user_id":"u2"}'
-# HTTP 409 {"error":"самокат S-1 уже арендован"}
+# попробовать взять тот же самокат ещё раз - будет 409
+curl -s -o /dev/null -w "%{http_code}\n" -X POST http://localhost:8000/rentals -H "Content-Type: application/json" -d '{"scooter_id":"S-1","user_id":"u2"}'
+# 409
 
-# 3. Список активных аренд
+# список активных аренд
 curl -s http://localhost:8000/rentals/active
-# {"count":1,"rentals":[{"scooter_id":"S-1", ...}]}
+# {"count":1,"rentals":[{"scooter_id":"S-1","started_at":1794916093,"user_id":"u1"}]}
 
-# 4. Завершение аренды
+# перезапустить API - аренда остаётся, потому что она в Redis
+docker compose restart api
+curl -s http://localhost:8000/rentals/active
+# {"count":1,"rentals":[...]}
+
+# завершить аренду
 curl -s -X POST http://localhost:8000/rentals/S-1/stop
-# {"duration_seconds":42,"finished_at":...,"scooter_id":"S-1","started_at":...,"user_id":"u1"}
+# {"duration_seconds":8,"finished_at":1794916101,"scooter_id":"S-1","started_at":1794916093,"user_id":"u1"}
 
-# 5. Список снова пуст
+# теперь активных нет
 curl -s http://localhost:8000/rentals/active
 # {"count":0,"rentals":[]}
 ```
 
-Проверка «данные в Redis, а не в памяти приложения»:
+Выводы в комментариях взяты из настоящего запуска. Посмотреть данные прямо в Redis можно так:
 
 ```bash
-curl -s -X POST http://localhost:8000/rentals -H "Content-Type: application/json" \
-  -d '{"scooter_id":"S-7","user_id":"u7"}'
-docker compose restart api
-curl -s http://localhost:8000/rentals/active          # S-7 по-прежнему в списке
 docker compose exec redis redis-cli HGETALL rentals:active
 ```
 
-## API
+## Методы API
 
-| Метод и путь | Что делает | Коды |
-|--------------|-----------|------|
-| `GET /health` | проверка API и Redis | 200 / 503 |
-| `POST /rentals` | старт аренды: `{scooter_id, user_id}` | 201 / 400 / 409 |
-| `POST /rentals/{scooter_id}/stop` | завершение, возвращает `duration_seconds` | 200 / 404 |
-| `GET /rentals/active` | активные аренды, по времени старта | 200 |
+| Метод | Что делает | Ответы |
+|-------|-----------|--------|
+| `GET /health` | проверка API и связи с Redis | 200, 503 если Redis недоступен |
+| `POST /rentals` | начать аренду, в теле `scooter_id` и `user_id` | 201, 400 если нет полей, 409 если самокат занят |
+| `POST /rentals/{scooter_id}/stop` | завершить аренду, возвращает длительность | 200, 404 если аренды нет |
+| `GET /rentals/active` | список активных аренд | 200 |
 
-Старт использует `HSETNX` — атомарную операцию Redis: два одновременных запроса на один самокат не создадут две аренды.
+Аренды хранятся в hash `rentals:active` (ключ - id самоката). Для старта используется команда `HSETNX`: она записывает значение, только если такого ключа ещё нет. Поэтому даже если два запроса придут одновременно, один самокат не сдадут двум людям.
 
 ## Тесты без Docker
 
@@ -94,11 +95,4 @@ pip install -r requirements-dev.txt
 pytest
 ```
 
-Используется `fakeredis` (подмена Redis в памяти) и управляемые часы; ожидаемо `8 passed`.
-
-## Как проверялось
-
-- `pytest` — 8 тестов API проходят;
-- `docker compose config -q` — конфигурация Compose валидна.
-- `docker compose up --build -d` — образ собран, оба сервиса в статусе `healthy`;
-- все `curl`-сценарии из блока «Проверка» выполнены: старт аренды (201), повторный старт (409), список активных, сохранение аренды после `docker compose restart api`, завершение (`duration_seconds`), пустой список.
+8 тестов, все проходят.
