@@ -1,0 +1,254 @@
+openapi: 3.0.3
+info:
+  title: СамоКат API
+  version: 1.0.0
+  description: |
+    API сервиса аренды электросамокатов: список доступных самокатов,
+    старт и завершение поездки, история поездок пользователя.
+    Статусы и тарификация описаны в docs/tech.md и docs/user.md.
+servers:
+  - url: http://localhost:8080/api/v1
+    description: Локальный stub-сервер
+tags:
+  - name: Scooters
+    description: Самокаты
+  - name: Trips
+    description: Поездки
+security:
+  - bearerAuth: []
+paths:
+  /scooters:
+    get:
+      tags: [Scooters]
+      summary: Список доступных самокатов
+      description: Возвращает самокаты со статусом `AVAILABLE`, при необходимости — в радиусе от точки.
+      operationId: listAvailableScooters
+      parameters:
+        - name: lat
+          in: query
+          schema: { type: number, format: double, minimum: -90, maximum: 90 }
+          description: Широта центра поиска
+        - name: lon
+          in: query
+          schema: { type: number, format: double, minimum: -180, maximum: 180 }
+          description: Долгота центра поиска
+        - name: radiusM
+          in: query
+          schema: { type: integer, minimum: 50, maximum: 5000, default: 500 }
+          description: Радиус поиска в метрах (используется вместе с lat и lon)
+      responses:
+        "200":
+          description: Список доступных самокатов
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Scooter" }
+              example:
+                - id: SC-1042
+                  status: AVAILABLE
+                  batteryPercent: 87
+                  lat: 53.9006
+                  lon: 27.5590
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /scooters/{scooterId}:
+    get:
+      tags: [Scooters]
+      summary: Информация о самокате
+      operationId: getScooter
+      parameters:
+        - $ref: "#/components/parameters/ScooterId"
+      responses:
+        "200":
+          description: Самокат
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Scooter" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /trips:
+    post:
+      tags: [Trips]
+      summary: Начать поездку
+      description: |
+        Переводит самокат `AVAILABLE` → `IN_USE`, создаёт поездку со статусом `ACTIVE`.
+        У пользователя не может быть более одной активной поездки.
+      operationId: startTrip
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/StartTripRequest" }
+            example: { scooterId: SC-1042 }
+      responses:
+        "201":
+          description: Поездка начата
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Самокат недоступен или у пользователя уже есть активная поездка
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+              example: { code: SCOOTER_NOT_AVAILABLE, message: Самокат SC-1042 сейчас занят }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+    get:
+      tags: [Trips]
+      summary: История поездок пользователя
+      description: Завершённые и отменённые поездки текущего пользователя, новые — первыми.
+      operationId: listTrips
+      parameters:
+        - name: status
+          in: query
+          schema: { $ref: "#/components/schemas/TripStatus" }
+          description: Фильтр по статусу поездки
+        - name: limit
+          in: query
+          schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+        - name: offset
+          in: query
+          schema: { type: integer, minimum: 0, default: 0 }
+      responses:
+        "200":
+          description: Страница истории
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: "#/components/schemas/Trip" }
+                  total: { type: integer, example: 37 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+  /trips/{tripId}:
+    get:
+      tags: [Trips]
+      summary: Информация о поездке
+      operationId: getTrip
+      parameters:
+        - $ref: "#/components/parameters/TripId"
+      responses:
+        "200":
+          description: Поездка
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /trips/{tripId}/finish:
+    post:
+      tags: [Trips]
+      summary: Завершить поездку
+      description: |
+        Фиксирует время окончания, считает стоимость и переводит поездку в `FINISHED`,
+        а самокат — в `AVAILABLE`. Повторное завершение даёт 409.
+      operationId: finishTrip
+      parameters:
+        - $ref: "#/components/parameters/TripId"
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/FinishTripRequest" }
+      responses:
+        "200":
+          description: Поездка завершена, стоимость рассчитана
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Trip" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Поездка уже не активна
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    ScooterId:
+      name: scooterId
+      in: path
+      required: true
+      schema: { type: string, example: SC-1042 }
+    TripId:
+      name: tripId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Unauthorized:
+      description: Не передан или недействителен токен
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: Объект не найден
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+          example: { code: NOT_FOUND, message: Объект не найден }
+  schemas:
+    ScooterStatus:
+      type: string
+      enum: [AVAILABLE, IN_USE, CHARGING, MAINTENANCE]
+      description: Статус самоката (см. docs/tech.md)
+    TripStatus:
+      type: string
+      enum: [ACTIVE, FINISHED, CANCELED]
+      description: Статус поездки (см. docs/tech.md)
+    Scooter:
+      type: object
+      required: [id, status, batteryPercent, lat, lon]
+      properties:
+        id: { type: string, example: SC-1042 }
+        status: { $ref: "#/components/schemas/ScooterStatus" }
+        batteryPercent: { type: integer, minimum: 0, maximum: 100, example: 87 }
+        lat: { type: number, format: double, example: 53.9006 }
+        lon: { type: number, format: double, example: 27.559 }
+    StartTripRequest:
+      type: object
+      required: [scooterId]
+      properties:
+        scooterId: { type: string, example: SC-1042 }
+    FinishTripRequest:
+      type: object
+      properties:
+        lat: { type: number, format: double, description: Координаты парковки }
+        lon: { type: number, format: double }
+    Trip:
+      type: object
+      required: [id, scooterId, status, startedAt]
+      properties:
+        id: { type: string, format: uuid }
+        scooterId: { type: string, example: SC-1042 }
+        status: { $ref: "#/components/schemas/TripStatus" }
+        startedAt: { type: string, format: date-time }
+        finishedAt: { type: string, format: date-time, nullable: true }
+        durationMinutes:
+          type: integer
+          nullable: true
+          description: Оплачиваемые минуты (округление вверх), заполняется при завершении
+        cost:
+          type: number
+          format: double
+          nullable: true
+          description: Стоимость поездки в рублях (старт + минуты)
+      example:
+        id: 3f9c1d1e-5f4b-4a3e-9a38-0d4c5a1f7b11
+        scooterId: SC-1042
+        status: FINISHED
+        startedAt: "2027-04-10T08:15:00Z"
+        finishedAt: "2027-04-10T08:32:10Z"
+        durationMinutes: 18
+        cost: 194
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: NOT_FOUND }
+        message: { type: string }
